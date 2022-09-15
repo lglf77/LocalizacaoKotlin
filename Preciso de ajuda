@@ -1,0 +1,405 @@
+-------------------------------------------------------------------------
+                              CÓDOGIO
+-------------------------------------------------------------------------
+
+import android.Manifest.permission.ACCESS_COARSE_LOCATION
+import android.Manifest.permission.ACCESS_FINE_LOCATION
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Address
+import android.location.Geocoder
+import android.location.Location
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Bundle
+import android.os.Looper
+import android.provider.Settings
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import com.google.android.gms.location.*
+import com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY
+import com.lglf77.latitudelongitude.databinding.ActivityMainBinding
+import java.text.SimpleDateFormat
+import java.util.*
+
+open class MainActivity : AppCompatActivity() {
+
+    private lateinit var bindingMainActivity: ActivityMainBinding
+
+    private var mFusedLocationProviderClient: FusedLocationProviderClient? = null
+    private val setInterval: Long = 15000
+    private val setFastestInterval: Long = 2000
+    // private val smallest_Displacement = 170f
+    // private val max_Wait_Time : Long = 100
+    private lateinit var mLastLocation: Location
+    private lateinit var mLocationRequest: LocationRequest
+    // internal lateinit var mLocationRequest: LocationRequest
+    private val requestPermissionLocation = 10
+    private val permissionRequestAccessLocation = 100
+
+    @SuppressLint("SetTextI18n")
+    private val registerActivity =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            if (permissions[ACCESS_FINE_LOCATION] == true) {
+                checkGPSStatus()
+            } else {
+                if (permissions[ACCESS_FINE_LOCATION] == false) {
+                    if (ActivityCompat.shouldShowRequestPermissionRationale(this, ACCESS_FINE_LOCATION)) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Permissão Local negada por você")
+                            .setMessage(
+                                "Para fins de REGISTRO neste aplicativo, é necessário fornecer a localização de forma estável " +
+                                        "Por gentileza, toque em SIM para informar a cidade e o País."
+                            )
+                            .setNegativeButton("NÃO") { dialog, _ ->
+                                dialog.dismiss()
+                                bindingMainActivity.textView.text = "Sem sua permissão LOCAL, a tentativa de registro havará falhas"
+                            }
+                            .setPositiveButton("SIM") { _, _ -> checkPermissionFineLocation() }
+                            .setCancelable(false)
+                            .show()
+                        // Apenas negou
+                        Toast.makeText(this, "ACCESS_FINE_LOCATION - APENAS NEGOU", Toast.LENGTH_SHORT).show()
+                        // show permission snackbar
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("Permissão de LOCATION está negada definitivamente")
+                            .setMessage(
+                                "O sistema do google requer que você vá MANUALMENTE " +
+                                        "permitir esta funcionalidade para cede acesso de sua localização. \n\n" +
+                                        "* TOQUE EM CONFIGURAÇÕES. \n  * Procure por PERMISSÕES e toque. \n" +
+                                        "* para ativar a opção Local (Location). \n."
+                            )
+                            .setPositiveButton("CONFIGURAÇÕES") { _, _ -> showIntentActionsSettingsLocal() }
+                            .setCancelable(true)
+                            .show()
+                        // Não perguntar novamente
+                        bindingMainActivity.textView.text = "*AVISO IMPORTANTE: * \n\n " +
+                                "A permissão LOCAL esteve negada definitivamente por você. \n " +
+                                "Não há possibilidade de concluir seu cadstro de usuário sem a permissão LOCAL ativada. \n\n" +
+                                "A orientação que a empresa GOOGLE repassa aos desenvolvedores é," +
+                                "que o mesmo ative manualmente seguindo estas etapas abaixo: \n\n " +
+                                "Feche este aplicativo, pressione por 2 segundos ou mais o próprio ícone do App FULANO minimizado na sua tela principal de Smartphone," +
+                                "Em seguida, toque em INFORMAÇÕES DO APLICATIVO ou DA APLICAÇÃO, procure por Permissões e veifique se LOCAL ou LOCATION está ativada, se estiver ativada, retorne ao app para iniciar seu registro de cadastro. \n\n" +
+                                "Adradecemos seu contato para \n" + R.string.str_email_included + "\n" +
+                                " (suporte de dúvida sobre este aplicativo."
+                        Toast.makeText(this, "ACCESS_FINE_LOCATION - NÃO PERGUNTAR NOVAMENTE", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
+    @SuppressLint("SetTextI18n")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        bindingMainActivity = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(bindingMainActivity.root)
+        // setContentView(R.layout.activity_main)
+
+        // isLocationEnabled(this)
+
+        supportActionBar?.hide()
+        registerActivity.launch(arrayOf(ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION)) // pedir permissão
+
+        Log.d("TAG", "Ciclo on Create - foi chamado")
+        // fim do onCreate
+
+    }
+
+    private fun checkPermissionFineLocation() {
+        ActivityCompat.requestPermissions(this@MainActivity, arrayOf(ACCESS_FINE_LOCATION),
+            permissionRequestAccessLocation)
+    }
+
+    // mostrar intent de ativaçaõ manual do Local(Location)
+    private fun showIntentActionsSettingsLocal() {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", packageName, null)
+        })
+    }
+
+    private fun buildAlertMessageNoGps() {
+        val dialogBuilder = AlertDialog.Builder(this)
+        dialogBuilder.setMessage("Seu GPS parece estar desabilitado, você deseja habilitá-lo")
+            .setCancelable(false)
+            .setPositiveButton("Yes") { dialog, _ ->
+                startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                dialog.dismiss()
+            }
+            .setNegativeButton("No") { dialog, _ ->
+                dialog.cancel()
+            }
+        val alert = dialogBuilder.create()
+        alert.show()
+    }
+
+    private fun startLocationUpdates() {
+        mLocationRequest = LocationRequest.create()
+        mLocationRequest.run {
+            priority = PRIORITY_HIGH_ACCURACY
+            interval = setInterval
+            setFastestInterval(setFastestInterval)
+        }
+       /*
+        // Create the location request to start receiving updates
+        mLocationRequest.priority = PRIORITY_HIGH_ACCURACY
+        mLocationRequest.interval = setInterval
+        mLocationRequest.fastestInterval = setFastestInterval
+        //mLocationRequest.smallestDisplacement = smallest_Displacement
+        */
+
+        // Create LocationSettingsRequest object using location request
+        val builder = LocationSettingsRequest.Builder()
+        builder.addLocationRequest(mLocationRequest)
+        val locationSettingsRequest = builder.build()
+
+        val settingsClient = LocationServices.getSettingsClient(this)
+        settingsClient.checkLocationSettings(locationSettingsRequest)
+
+        mFusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(this)
+        // new Google API SDK v11 uses getFusedLocationProviderClient(this)
+        if (ActivityCompat.checkSelfPermission(this, ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this,
+                ACCESS_COARSE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        mFusedLocationProviderClient!!.requestLocationUpdates(
+            mLocationRequest, mLocationCallback,
+            Looper.myLooper()
+        )
+    }
+
+    private val mLocationCallback = object : LocationCallback() {
+        override fun onLocationResult(locationResult: LocationResult) {
+            // trabalhe aqui
+            locationResult.lastLocation
+            onLocationChanged(locationResult.lastLocation!!)
+            Log.d("TAG", "Ciclo on lastLocation: $locationResult")
+        }
+    }
+
+    @SuppressLint("SimpleDateFormat", "SetTextI18n")
+    fun onLocationChanged(location: Location) {
+        // New location has now been determined
+        mLastLocation = location
+        val date: Date = Calendar.getInstance().time
+        val sdf = SimpleDateFormat("hh:mm:ss a")
+        bindingMainActivity.txtTime.text = "Updated at : " + sdf.format(date)
+        bindingMainActivity.txtLat.text = "LATITUDE : " + mLastLocation.latitude
+        bindingMainActivity.txtLong.text = "LONGITUDE : " + mLastLocation.longitude
+        // You can now create a LatLng Object for use with maps
+        // FORMATAR PARA NOME DE RUA, BAIRRO, CIDADE, ESTADO
+        val geocoder = Geocoder(this@MainActivity, Locale.getDefault())
+        val addresses : List<Address> = geocoder.getFromLocation(mLastLocation.latitude, mLastLocation.longitude, 1)
+        val address : String = addresses[0].getAddressLine(0)
+        Log.d("Addresses 01", "Ciclo on Endereço 01:  - $address") // 1600 Amphitheatre Pkwy, Mountain View, CA 94043, USA
+        val addressCodeArea : String = addresses[0].adminArea
+        Log.d("Addresses 02", "Ciclo on Endereço 02:  - $addressCodeArea") // California
+        val addressCountry : String = addresses[0].countryCode
+        Log.d("Addresses 02", "Ciclo on Endereço 03:  - $addressCountry") //  US
+        bindingMainActivity.textViewAddress.text = address
+        // String address = addresses.get(0).getAddressLine(0)
+    }
+
+    /*
+    private fun stoplocationUpdates() {
+        mFusedLocationProviderClient!!.removeLocationUpdates(mLocationCallback)
+    }
+     */
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == requestPermissionLocation) {
+            if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startLocationUpdates()
+            } else {
+                Toast.makeText(this@MainActivity, "Permission Denied", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun checkGPSStatus() {
+        val locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            startLocationUpdates()
+            Toast.makeText(this@MainActivity, "GPS ativo", Toast.LENGTH_SHORT).show()
+        } else {
+            buildAlertMessageNoGps()
+            Toast.makeText(this@MainActivity, "GPS desativado", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        Log.d("TAG", "Ciclo on Start - ")
+    }
+    override fun onResume() {
+        super.onResume()
+        Log.d("TAG", "Ciclo on Resume - ")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.d("TAG", "Ciclo on Pause - ")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        Log.d("TAG", "Ciclo on Stop - ")
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+        Log.d("TAG", "Ciclo on Restart - ")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d("TAG", "Ciclo on Destroy - ")
+    }
+
+    override fun onBackPressed() {
+        super.onBackPressed()
+        finish()
+    }
+
+}
+
+-------------------------------------------------------------------------
+                              XML
+-------------------------------------------------------------------------
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical"
+    tools:context=".MainActivity">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fillViewport="true"
+        tools:ignore="UselessParent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:weightSum="1">
+
+                <TextView
+                    android:id="@+id/txtLat"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginLeft="12dp"
+                    android:layout_marginTop="12dp"
+                    android:layout_marginRight="12dp"
+                    android:layout_weight="0.5"
+                    android:padding="12dp"
+                    android:text="Lat"
+                    android:textColor="@color/black"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/txtLong"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginLeft="12dp"
+                    android:layout_marginRight="12dp"
+                    android:layout_weight="0.5"
+                    android:padding="12dp"
+                    android:text="Long"
+                    android:textColor="@color/black"
+                    android:textSize="16sp" />
+
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/txtTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginLeft="12dp"
+                android:layout_marginRight="12dp"
+                android:padding="12dp"
+                android:text="Time"
+                android:textColor="@color/black"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/textViewAddress"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_margin="12sp"
+                android:text="Endereço completo: "
+                android:textAlignment="inherit"
+                android:textColor="@color/black"
+                android:textSize="16sp"
+                tools:ignore="HardcodedText" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/textViewCity"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_margin="12sp"
+                    android:text="City: "
+                    android:textAlignment="inherit"
+                    android:textColor="@color/black"
+                    android:textSize="16sp"
+                    tools:ignore="HardcodedText" />
+
+                <TextView
+                    android:id="@+id/textViewCountry"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_margin="12sp"
+                    android:text="Country: "
+                    android:textAlignment="inherit"
+                    android:textColor="@color/black"
+                    android:textSize="16sp"
+                    tools:ignore="HardcodedText" />
+
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/textView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_margin="12sp"
+                android:text="Location: "
+                android:textAlignment="inherit"
+                android:textColor="@color/black"
+                android:textSize="16sp"
+                tools:ignore="HardcodedText" />
+
+        </LinearLayout>
+
+    </ScrollView>
+
+</RelativeLayout>
